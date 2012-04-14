@@ -1,6 +1,18 @@
 # inspired from http://www.turboradness.com/watermark-your-images-with-python
 import os
+import sys
+import Queue
+import threading
+import time
+
 import Image, ImageChops, ImageOps, ImageEnhance
+
+from powerhose.job import Job
+from powerhose import get_cluster
+from powerhose.client import Pool
+
+from signpic import logger
+
 
 _OPACITY = 50
 _POSITION = 3
@@ -27,7 +39,7 @@ def inject_wm(wm, im, wm_mode):
     wmbuffer = 10
 
     if wm.size[0] > im.size[0] or wm.size[1] > im.size[1]:
-        wm = _resize_wm(wm, wm.size, image.size)
+        wm = _resize_wm(wm, wm.size, im.size)
         wmbuffer = 1
 
     if wm_mode == "screen":
@@ -39,8 +51,23 @@ def inject_wm(wm, im, wm_mode):
     return water_marked
 
 
-def screen_mode(im, wm, wmbuffer):
+def _resize_wm(wm, wmsize, imsize):
+    if imsize[0] < wmsize[0]:
+        #Image X res is larger than its Y res.
+        divVal = float(imsize[0]) / float(wmsize[0])
+        newWmXres = int(round(float(wmsize[0] * divVal)))
+        newWmYres = int(round(float(wmsize[1] * divVal)))
+        wm = wm.resize((newWmXres,newWmYres), Image.ANTIALIAS)
+    else:
+        divVal = float(imsize[1]) / float(wmsize[1])
+        newWmXres = int(round(float(wmsize[0] * divVal)))
+        newWmYres = int(round(float(wmsize[1] * divVal)))
+        wm = wm.resize((newWmXres,newWmYres), Image.ANTIALIAS)
 
+    return wm
+
+
+def screen_mode(im, wm, wmbuffer):
     imsize = im.size
     wmsize = wm.size
     brightness = float(_OPACITY) / 100
@@ -84,7 +111,7 @@ def _wm_pos(wmbuffer, imsize, wmsize ):
 
 def apply_watermark(job):
     # getting the image and watermark file names.
-    image_file, wm_file = job.data.split()
+    image_file, wm_file = job.data.split(':::')
 
     # loading the watermark
     watermark = Image.open(wm_file)
@@ -118,9 +145,84 @@ def apply_watermark(job):
     return target
 
 
+class FileFinder(threading.Thread):
+    def __init__(self, root, queue):
+        threading.Thread.__init__(self)
+        self.root = root
+        self.queue = queue
+
+    def run(self):
+        for root, dirs, files in os.walk(self.root):
+            for file in files:
+                name, ext = os.path.splitext(file)
+                if ext.lower() != '.jpg' or name.endswith('_wm'):
+                    continue
+                path = os.path.join(root, file)
+                self.queue.put(path)
+
+
+class Worker(threading.Thread):
+    def __init__(self, queue, pool, watermark):
+        threading.Thread.__init__(self)
+        self.queue = queue
+        self.pool = pool
+        self.watermark = watermark
+
+    def run(self):
+        while not self.queue.empty():
+            path = self.queue.get()
+            logger.info('Sending %s' % path)
+            try:
+                logger.info('Result: ' + self.pool.execute(path + ':::' + self.watermark))
+            except Exception:
+                logger.info('Failed for %s' % path)
+
+
+def main(debug=False):
+    import logging
+    logger.setLevel(logging.DEBUG)
+    ch = logging.StreamHandler()
+
+    if debug:
+        ch.setLevel(logging.DEBUG)
+    else:
+        ch.setLevel(logging.INFO)
+
+    formatter = logging.Formatter('[%(asctime)s][%(name)s] %(message)s')
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+
+    queue = Queue.Queue()
+    pool = Pool()
+
+    # look for files
+    finder = FileFinder(sys.argv[1], queue)
+    finder.start()
+
+    # run the cluster
+    logger.info('Starting the cluster')
+    cluster = get_cluster('signpic.sign.apply_watermark', background=True)
+    cluster.start()
+    time.sleep(2.)
+
+    watermark = os.path.join(os.path.dirname(__file__), 'signature.jpg')
+    try:
+        workers = [Worker(queue, pool, watermark) for i in range(10)]
+
+        for worker in workers:
+            worker.start()
+
+        finder.join()
+        for worker in workers:
+            worker.join()
+    finally:
+        cluster.stop()
+
+
 if __name__ == '__main__':
     from powerhose.job import Job
-
-    j = Job('IMGP1079.jpg watermark.jpg')
+    pic = sys.argv[1]
+    signature = os.path.join(os.path.dirname(__file__), 'signature.jpg')
+    j = Job('%s:::%s' % (pic, signature))
     print apply_watermark(j)
-
