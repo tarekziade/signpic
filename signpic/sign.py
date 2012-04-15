@@ -191,24 +191,31 @@ class Worker(threading.Thread):
 def main():
     parser = argparse.ArgumentParser(description='Sign some pictures.')
 
+    parser.add_argument('pic', help="Directory or single picture.",
+                        action='store')
+
     parser.add_argument('--debug', action='store_true', default=False,
                         help="Debug mode")
 
     parser.add_argument('--phose', action='store_true', default=False,
                         help="Use Powerhose")
 
-    parser.add_argument('pic', help="Directory or single picture.")
-
     args = parser.parse_args()
 
     import logging
-    logger.setLevel(logging.DEBUG)
+
+    if args.debug:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    logger.setLevel(level)
     ch = logging.StreamHandler()
 
     if args.debug:
-        ch.setLevel(logging.DEBUG)
+        ch.setLevel(level)
     else:
-        ch.setLevel(logging.INFO)
+        ch.setLevel(level)
 
     formatter = logging.Formatter('[%(asctime)s][%(name)s] %(message)s')
     ch.setFormatter(formatter)
