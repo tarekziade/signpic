@@ -1,6 +1,7 @@
 from setuptools import setup, find_packages
 
-install_requires=['PIL', 'powerhose']
+
+install_requires=['PIL']
 
 
 with open("README.rst") as f:

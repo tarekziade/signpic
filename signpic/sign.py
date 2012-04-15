@@ -4,18 +4,21 @@ import sys
 import Queue
 import threading
 import time
+import argparse
 
 import Image, ImageChops, ImageOps, ImageEnhance
 
-from powerhose.job import Job
-from powerhose import get_cluster
-from powerhose.client import Pool
 
 from signpic import logger
 
 
 _OPACITY = 50
 _POSITION = 3
+
+
+class FakeJob(object):
+    def __init__(self, data):
+        self.data = data
 
 
 def _wm_mode(image):
@@ -162,9 +165,10 @@ class FileFinder(threading.Thread):
 
 
 class Worker(threading.Thread):
-    def __init__(self, queue, pool, watermark):
+    def __init__(self, queue, pool, watermark, phose=False):
         threading.Thread.__init__(self)
         self.queue = queue
+        self.phose = phose
         self.pool = pool
         self.watermark = watermark
 
@@ -173,17 +177,35 @@ class Worker(threading.Thread):
             path = self.queue.get()
             logger.info('Sending %s' % path)
             try:
-                logger.info('Result: ' + self.pool.execute(path + ':::' + self.watermark))
+                data = path + ':::' + self.watermark
+                if self.phose:
+                    result = self.pool.execute(data)
+                else:
+                    result = apply_watermark(FakeJob(data))
+                logger.info('Result: ' + result)
+
             except Exception:
                 logger.info('Failed for %s' % path)
 
 
-def main(debug=False):
+def main():
+    parser = argparse.ArgumentParser(description='Sign some pictures.')
+
+    parser.add_argument('--debug', action='store_true', default=False,
+                        help="Debug mode")
+
+    parser.add_argument('--phose', action='store_true', default=False,
+                        help="Use Powerhose")
+
+    parser.add_argument('pic', help="Directory or single picture.")
+
+    args = parser.parse_args()
+
     import logging
     logger.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
 
-    if debug:
+    if args.debug:
         ch.setLevel(logging.DEBUG)
     else:
         ch.setLevel(logging.INFO)
@@ -192,23 +214,29 @@ def main(debug=False):
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-
     queue = Queue.Queue()
-    pool = Pool()
 
     # look for files
-    finder = FileFinder(sys.argv[1], queue)
+    finder = FileFinder(args.pic, queue)
     finder.start()
 
     # run the cluster
-    logger.info('Starting the cluster')
-    cluster = get_cluster('signpic.sign.apply_watermark', background=True)
-    cluster.start()
-    time.sleep(2.)
+    if args.phose:
+        from powerhose import get_cluster
+        from powerhose.client import Pool
+
+        pool = Pool()
+        logger.info('Starting the cluster')
+        cluster = get_cluster('signpic.sign.apply_watermark', background=True)
+        cluster.start()
+        time.sleep(2.)
+    else:
+        pool = None
 
     watermark = os.path.join(os.path.dirname(__file__), 'signature.jpg')
     try:
-        workers = [Worker(queue, pool, watermark) for i in range(10)]
+        workers = [Worker(queue, pool, watermark,
+                          args.phose) for i in range(10)]
 
         for worker in workers:
             worker.start()
@@ -217,12 +245,12 @@ def main(debug=False):
         for worker in workers:
             worker.join()
     finally:
-        cluster.stop()
+        if args.phose:
+            cluster.stop()
 
 
 if __name__ == '__main__':
-    from powerhose.job import Job
     pic = sys.argv[1]
     signature = os.path.join(os.path.dirname(__file__), 'signature.jpg')
-    j = Job('%s:::%s' % (pic, signature))
+    j = FakeJob('%s:::%s' % (pic, signature))
     print apply_watermark(j)
