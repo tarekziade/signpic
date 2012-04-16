@@ -112,13 +112,13 @@ def _wm_pos(wmbuffer, imsize, wmsize ):
     return xpos, ypos
 
 
-def apply_watermark(job):
-    # getting the image and watermark file names.
+def apply_signature(job):
+    # getting the image and signature file names.
     image_file, wm_file = job.data.split(':::')
 
-    # loading the watermark
-    watermark = Image.open(wm_file)
-    watermark, mode = _wm_mode(watermark)
+    # loading the signature
+    signature = Image.open(wm_file)
+    signature, mode = _wm_mode(signature)
 
     # loading the image
     image = Image.open(image_file)
@@ -126,8 +126,8 @@ def apply_watermark(job):
     if 'RGB' not in image.mode:
         image = image.convert('RGB')
 
-    # injecting watermark
-    watermarked = inject_wm(watermark, image, mode)
+    # injecting signature
+    signatureed = inject_wm(signature, image, mode)
 
     # saving the result
     image_filename, ext = os.path.splitext(image_file)
@@ -135,15 +135,15 @@ def apply_watermark(job):
 
     if image.format == 'JPEG':
         try:
-            watermarked.save(target, image.format, quality=95, optimize=1)
+            signatureed.save(target, image.format, quality=95, optimize=1)
         except IOError:
-            watermarked.save(target, image.format, quality=95)
+            signatureed.save(target, image.format, quality=95)
 
     else:
         try:
-            watermarked.save(target, image.format, optimize=1)
+            signatureed.save(target, image.format, optimize=1)
         except IOError:
-            watermarked.save(target, image.format)
+            signatureed.save(target, image.format)
 
     return target
 
@@ -155,6 +155,7 @@ class FileFinder(threading.Thread):
         self.queue = queue
 
     def run(self):
+        logger.debug('Looking for files in %r' % self.root)
         for root, dirs, files in os.walk(self.root):
             for file in files:
                 name, ext = os.path.splitext(file)
@@ -165,23 +166,23 @@ class FileFinder(threading.Thread):
 
 
 class Worker(threading.Thread):
-    def __init__(self, queue, pool, watermark, phose=False):
+    def __init__(self, queue, pool, signature, phose=False):
         threading.Thread.__init__(self)
         self.queue = queue
         self.phose = phose
         self.pool = pool
-        self.watermark = watermark
+        self.signature = signature
 
     def run(self):
         while not self.queue.empty():
             path = self.queue.get()
-            logger.info('Sending %s' % path)
+            logger.info('Working on %s' % path)
             try:
-                data = path + ':::' + self.watermark
+                data = path + ':::' + self.signature
                 if self.phose:
                     result = self.pool.execute(data)
                 else:
-                    result = apply_watermark(FakeJob(data))
+                    result = apply_signature(FakeJob(data))
                 logger.info('Result: ' + result)
 
             except Exception:
@@ -189,10 +190,20 @@ class Worker(threading.Thread):
 
 
 def main():
+    signature  = os.path.join(os.path.expanduser('~'), '.signature.jpg')
+    if not os.path.exists(signature):
+        signature = os.path.join(os.path.dirname(__file__), 'signature.jpg')
+
     parser = argparse.ArgumentParser(description='Sign some pictures.')
 
     parser.add_argument('pic', help="Directory or single picture.",
                         action='store')
+
+    parser.add_argument('--signature',
+                        help=("Signature file. If not given, will look at "
+                              "~/.signature.jpg then fallback to the "
+                              "included signature."),
+                        default=signature)
 
     parser.add_argument('--debug', action='store_true', default=False,
                         help="Debug mode")
@@ -200,11 +211,11 @@ def main():
     parser.add_argument('--phose', action='store_true', default=False,
                         help="Use Powerhose")
 
-    args = parser.parse_args()
+    parsed = parser.parse_args()
 
     import logging
 
-    if args.debug:
+    if parsed.debug:
         level = logging.DEBUG
     else:
         level = logging.INFO
@@ -212,7 +223,7 @@ def main():
     logger.setLevel(level)
     ch = logging.StreamHandler()
 
-    if args.debug:
+    if parsed.debug:
         ch.setLevel(level)
     else:
         ch.setLevel(level)
@@ -223,36 +234,45 @@ def main():
 
     queue = Queue.Queue()
 
-    # look for files
-    finder = FileFinder(args.pic, queue)
-    finder.start()
+    if not os.path.exists(parsed.pic):
+        print("%r does not seem to exist" % parsed.pic)
+        sys.exit(1)
+
+    # looking for files
+    if os.path.isdir(parsed.pic):
+        finder = FileFinder(parsed.pic, queue)
+        finder.start()
+    else:
+        finder = None
+        queue.put(parsed.pic)
 
     # run the cluster
-    if args.phose:
+    if parsed.phose:
         from powerhose import get_cluster
         from powerhose.client import Pool
 
         pool = Pool()
         logger.info('Starting the cluster')
-        cluster = get_cluster('signpic.sign.apply_watermark', background=True)
+        cluster = get_cluster('signpic.sign.apply_signature', background=True)
         cluster.start()
         time.sleep(2.)
     else:
         pool = None
 
-    watermark = os.path.join(os.path.dirname(__file__), 'signature.jpg')
     try:
-        workers = [Worker(queue, pool, watermark,
-                          args.phose) for i in range(10)]
+        workers = [Worker(queue, pool, parsed.signature,
+                          parsed.phose) for i in range(10)]
 
         for worker in workers:
             worker.start()
 
-        finder.join()
+        if finder is not None:
+            finder.join()
+
         for worker in workers:
             worker.join()
     finally:
-        if args.phose:
+        if parsed.phose:
             cluster.stop()
 
 
@@ -260,4 +280,4 @@ if __name__ == '__main__':
     pic = sys.argv[1]
     signature = os.path.join(os.path.dirname(__file__), 'signature.jpg')
     j = FakeJob('%s:::%s' % (pic, signature))
-    print apply_watermark(j)
+    print apply_signature(j)
