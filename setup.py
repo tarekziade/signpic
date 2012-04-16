@@ -14,10 +14,11 @@ with open("CHANGES.rst") as f:
 setup(name='signpic',
       version='0.1',
       packages=find_packages(),
-      description="Signpic inserts in yoru pictures a signature",
+      description="Signpic inserts in your pictures a signature",
       long_description=README + '\n' + CHANGES,
       author="Tarek Ziade",
       author_email="tarek@ziade.org",
+      url='https://github.com/tarekziade/signpic',
       include_package_data=True,
       zip_safe=False,
       classifiers=[
