@@ -138,7 +138,6 @@ def apply_signature(job):
             signatureed.save(target, image.format, quality=95, optimize=1)
         except IOError:
             signatureed.save(target, image.format, quality=95)
-
     else:
         try:
             signatureed.save(target, image.format, optimize=1)
@@ -163,6 +162,8 @@ class FileFinder(threading.Thread):
                     continue
                 path = os.path.join(root, file)
                 self.queue.put(path)
+                sys.stdout.write('+')
+                sys.stdout.flush()
 
 
 class Worker(threading.Thread):
@@ -176,17 +177,17 @@ class Worker(threading.Thread):
     def run(self):
         while not self.queue.empty():
             path = self.queue.get()
-            logger.info('Working on %s' % path)
             try:
                 data = path + ':::' + self.signature
                 if self.phose:
                     result = self.pool.execute(data)
                 else:
                     result = apply_signature(FakeJob(data))
-                logger.info('Result: ' + result)
 
-            except Exception:
-                logger.info('Failed for %s' % path)
+                sys.stdout.write('.')
+                sys.stdout.flush()
+            except Exception, e:
+                logger.error(str(e))
 
 
 def main():
@@ -231,6 +232,8 @@ def main():
     formatter = logging.Formatter('[%(asctime)s][%(name)s] %(message)s')
     ch.setFormatter(formatter)
     logger.addHandler(ch)
+    phose_logger = logging.getLogger('powerhose')
+    phose_logger.addHandler(ch)
 
     queue = Queue.Queue()
 
@@ -238,25 +241,30 @@ def main():
         print("%r does not seem to exist" % parsed.pic)
         sys.exit(1)
 
+    logger.info('Using signature file %r' % parsed.signature)
+
     # looking for files
     if os.path.isdir(parsed.pic):
+        logger.info('Looking for files in %r' % parsed.pic)
         finder = FileFinder(parsed.pic, queue)
         finder.start()
+        time.sleep(.1)      # give it a chance to start
     else:
         finder = None
         queue.put(parsed.pic)
 
     # run the cluster
-    if parsed.phose:
+    if parsed.phose and finder is not None:
         from powerhose import get_cluster
         from powerhose.client import Pool
-
-        pool = Pool()
-        logger.info('Starting the cluster')
+        pool = Pool(timeout=30.)
+        logger.debug('Starting the PowerHose cluster')
         cluster = get_cluster('signpic.sign.apply_signature', background=True)
         cluster.start()
-        time.sleep(2.)
+        time.sleep(1.)
     else:
+        if parsed.phose:
+            logger.warning('Not using --phose for a single picture!')
         pool = None
 
     try:
@@ -274,6 +282,8 @@ def main():
     finally:
         if parsed.phose:
             cluster.stop()
+
+    sys.stdout.write('Done.\n')
 
 
 if __name__ == '__main__':
